@@ -2,13 +2,15 @@ package ohm.softa.a11;
 
 import ohm.softa.a11.openmensa.OpenMensaAPI;
 import ohm.softa.a11.openmensa.OpenMensaAPIService;
+import ohm.softa.a11.openmensa.model.Canteen;
+import ohm.softa.a11.openmensa.model.Meal;
+import ohm.softa.a11.openmensa.model.PageInfo;
 
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
-import java.util.Calendar;
-import java.util.Date;
-import java.util.Locale;
-import java.util.Scanner;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.stream.IntStream;
 
 /**
@@ -24,7 +26,7 @@ public class App {
 	private static final Calendar currentDate = Calendar.getInstance();
 	private static int currentCanteenId = -1;
 
-	public static void main(String[] args) {
+	public static void main(String[] args) throws ExecutionException, InterruptedException {
 		MenuSelection selection;
 		/* loop while true to get back to the menu every time an action was performed */
 		do {
@@ -49,19 +51,73 @@ public class App {
 		} while (true);
 	}
 
-	private static void printCanteens() {
+	private static void printCanteens() throws ExecutionException, InterruptedException {
 		System.out.print("Fetching canteens [");
 		/* TODO fetch all canteens and print them to STDOUT
 		 * at first get a page without an index to be able to extract the required pagination information
 		 * afterwards you can iterate the remaining pages
 		 * keep in mind that you should await the process as the user has to select canteen with a specific id */
+		openMensaAPI.getCanteens().thenApply(response -> {
+			PageInfo pageInfo = PageInfo.extractFromResponse(response);
+			List<Canteen> allCanteens;
+			if(response.body() != null){
+				allCanteens = response.body();
+			}else{
+				allCanteens = new LinkedList<>();
+			}
+			for(int i=2;i <= pageInfo.getTotalCountOfPages(); i++)
+			{
+				try{
+					allCanteens.addAll(openMensaAPI.getCanteens(i).get());
+				}catch(InterruptedException | ExecutionException e){
+					System.out.println(e);
+				}
+			}
+			return allCanteens;
+		}).thenAccept(canteens -> {
+			for(Canteen c: canteens){
+				System.out.println(c);
+			}
+		}).get();
 	}
 
-	private static void printMeals() {
+	private static void printMeals() throws ExecutionException, InterruptedException {
 		/* TODO fetch all meals for the currently selected canteen
 		 * to avoid errors retrieve at first the state of the canteen and check if the canteen is opened at the selected day
 		 * don't forget to check if a canteen was selected previously! */
+		if(currentCanteenId < 0){
+			System.out.println("Invalide current cantine id");
+			return;
+		}
+
+		final String dateString = dateFormat.format(currentDate.getTime());
+
+		/* fetch the state of the canteen */
+		openMensaAPI.getCanteenState(currentCanteenId, dateString)
+			.thenApply(state -> {
+				/* if canteen is open fetch the meals */
+				if (state != null && !state.isClosed()) {
+					try {
+						return openMensaAPI.getMeals(currentCanteenId, dateString).get();
+					} catch (InterruptedException | ExecutionException e) {
+					}
+				} else {
+					/* if canteen is not open - print a message and return */
+					System.out.println(String.format("Seems like the canteen has closed on this date: %s", dateFormat.format(currentDate.getTime())));
+				}
+				return new LinkedList<Meal>();
+			})
+			.thenAccept(meals -> {
+				/* print the retrieved meals to the STDOUT */
+				for (Meal m : meals) {
+					System.out.println(m);
+				}
+			})
+			.get(); /* block the thread by calling `get` to ensure that all results are retrieved when the method is completed */
 	}
+
+
+
 
 	/**
 	 * Utility method to select a canteen
@@ -71,7 +127,7 @@ public class App {
 		boolean readCanteenId = false;
 		do {
 			try {
-				System.out.println("Enter canteen id:");
+				System.out.println("Enter canteen id:"); // IN Cantine ID = 269
 				currentCanteenId = inputScanner.nextInt();
 				readCanteenId = true;
 			} catch (Exception e) {
